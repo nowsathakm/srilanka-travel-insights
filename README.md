@@ -20,9 +20,9 @@ srilanka-travel-insights/
 │   ├── part_a_analytics.py                   ← Spark analytics functions
 │   └── part_b_recommender.py                 ← Recommendation functions
 └── pages/
-    ├── 1_📊_Analytics_Dashboard.py           ← Part A dashboard
-    ├── 2_🗺️_Destination_Recommender.py       ← Destination finder
-    └── 3_🏠_Accommodation_Recommender.py     ← Part B recommender
+    ├── 1_Analytics_Dashboard.py           ← Part A dashboard
+    ├── 2_Destination_Recommender.py       ← Destination finder
+    └── 3_Accommodation_Recommender.py     ← Part B recommender
 ```
 
 ---
