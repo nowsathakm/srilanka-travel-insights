@@ -113,8 +113,3 @@ Open your browser at `http://localhost:8501`
   - Source: https://www.kaggle.com/datasets/kanchana1990/destination-sri-lanka/data
 
 ---
-
-## 🌐 Live Demo
-
-Deployed on Streamlit Community Cloud:
-👉 **[YOUR STREAMLIT URL HERE]**
