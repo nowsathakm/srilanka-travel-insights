@@ -325,6 +325,6 @@ st.divider()
 # Footer
 st.markdown("""
 <div style='text-align: center; color: grey; font-size: 13px;'>
-    Part A Complete — All analytics powered by Apache Spark & Spark MLlib
+    All analytics powered by Apache Spark & Spark MLlib
 </div>
 """, unsafe_allow_html=True)

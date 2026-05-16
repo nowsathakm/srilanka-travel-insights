@@ -3,7 +3,7 @@
 # Part A Extension: Destination Recommender
 # Recommends Sri Lankan destinations based on
 # user keyword preferences and district choice
-# using TF-IDF similarity from Spark MLlib
+# using keyword density scoring from Spark
 # ─────────────────────────────────────────────
 
 import streamlit as st
@@ -13,9 +13,9 @@ from utils.spark_session import get_spark_session
 from utils.part_a_analytics import (
     engineer_popularity_score,
     get_tfidf_keywords,
-    get_district_distribution
+    get_district_distribution,
+    get_keyword_scored_destinations
 )
-from pyspark.sql import functions as F
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -59,7 +59,7 @@ def load_districts():
 
 st.title("🗺️ Destination Recommender")
 st.markdown("**Find the best Sri Lankan destinations based on your preferences**")
-st.markdown("Powered by **TF-IDF keyword matching** and **Popularity Scoring** via Apache Spark.")
+st.markdown("Powered by **keyword density scoring** and **popularity ranking** via Apache Spark.")
 st.divider()
 
 # ─────────────────────────────────────────────
@@ -72,7 +72,7 @@ with st.spinner("Loading destination data from Spark..."):
     district_df = load_districts()
 
 # ─────────────────────────────────────────────
-# SECTION 1 — USER PREFERENCES
+# USER PREFERENCES
 # ─────────────────────────────────────────────
 
 st.subheader("🎯 Set Your Preferences")
@@ -80,7 +80,6 @@ st.subheader("🎯 Set Your Preferences")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    # District filter
     districts = ["All Districts"] + sorted(
         popularity_df["District"].unique().tolist()
     )
@@ -91,17 +90,15 @@ with col1:
     )
 
 with col2:
-    # Minimum popularity score
     min_popularity = st.slider(
         "⭐ Minimum Popularity Score",
         min_value=0,
         max_value=100,
-        value=30,
+        value=10,
         help="0 = show all, 100 = only the most popular"
     )
 
 with col3:
-    # Number of recommendations
     top_n = st.slider(
         "🔢 Number of Recommendations",
         min_value=5,
@@ -118,11 +115,10 @@ with col1:
     keyword_input = st.text_input(
         "Enter keywords (comma separated)",
         placeholder="e.g. nature, waterfall, hiking, beach, temple",
-        help="We'll match these against TF-IDF keywords from real tourist reviews"
+        help="Destinations are ranked by how frequently these keywords appear in their reviews"
     )
 
 with col2:
-    # Show available top keywords as chips
     top_keywords = keywords_df["word"].head(20).tolist()
     st.markdown("**Popular keywords from reviews:**")
     st.markdown(" · ".join([f"`{k}`" for k in top_keywords]))
@@ -130,97 +126,112 @@ with col2:
 st.divider()
 
 # ─────────────────────────────────────────────
-# SECTION 2 — GENERATE RECOMMENDATIONS
+# GENERATE RECOMMENDATIONS
 # ─────────────────────────────────────────────
 
 if st.button("🔍 Find Destinations", type="primary", use_container_width=True):
 
     with st.spinner("Matching destinations using Spark analytics..."):
 
-        # Start with full popularity dataframe
-        filtered = popularity_df.copy()
-
-        # Apply district filter
-        if selected_district != "All Districts":
-            filtered = filtered[filtered["District"] == selected_district]
-
-        # Apply popularity score filter
-        filtered = filtered[filtered["popularity_score"] >= min_popularity]
-
-        # Apply keyword matching if provided
         if keyword_input.strip():
-            keywords = [k.strip().lower() for k in keyword_input.split(",")]
+            keywords = [k.strip().lower() for k in keyword_input.split(",") if k.strip()]
 
-            # Load reviews for keyword matching
-            reviews_spark = spark.read.csv(
-                "data/reviews_final.csv",
-                header=True,
-                inferSchema=True
+            # Get keyword density scored results from Spark
+            result = get_keyword_scored_destinations(
+                spark, keywords, top_n=top_n
             )
 
-            # For each keyword find matching destinations
-            matched_destinations = set()
-            for keyword in keywords:
-                matches = reviews_spark.filter(
-                    F.lower(F.col("Review")).contains(keyword)
-                ).select("Destination").distinct()
-                matched_list = [r["Destination"] for r in matches.collect()]
-                matched_destinations.update(matched_list)
+            # Apply district filter
+            if selected_district != "All Districts":
+                result = result[result["District"] == selected_district]
 
-            if matched_destinations:
-                filtered = filtered[
-                    filtered["Destination"].isin(matched_destinations)
-                ]
+            # Apply minimum popularity filter if column exists
+            if "final_score" in result.columns:
+                result = result[result["final_score"] >= 0]
 
-        # Sort by popularity score and get top N
-        result = filtered.sort_values(
-            "popularity_score", ascending=False
-        ).head(top_n)
+        else:
+            # No keywords — use popularity ranking only
+            filtered = popularity_df.copy()
+
+            if selected_district != "All Districts":
+                filtered = filtered[filtered["District"] == selected_district]
+
+            filtered = filtered[filtered["popularity_score"] >= min_popularity]
+            result = filtered.sort_values(
+                "popularity_score", ascending=False
+            ).head(top_n)
 
     # ─────────────────────────────────────────
     # DISPLAY RESULTS
     # ─────────────────────────────────────────
 
     if result.empty:
-        st.warning("No destinations found matching your preferences. Try adjusting your filters.")
+        st.warning("""
+        No destinations found matching your preferences.
+        Try different keywords or adjust your filters.
+        """)
     else:
         st.success(f"✅ Found **{len(result)}** destinations matching your preferences!")
         st.divider()
 
-        # Results metrics
+        # Summary metrics
         col1, col2, col3 = st.columns(3)
         col1.metric("Destinations Found", len(result))
-        col2.metric("Avg Popularity Score", f"{result['popularity_score'].mean():.1f}")
+
+        if "relevance_score" in result.columns:
+            col2.metric("Avg Relevance Score", f"{result['relevance_score'].mean():.1f}")
+        elif "popularity_score" in result.columns:
+            col2.metric("Avg Popularity Score", f"{result['popularity_score'].mean():.1f}")
+
         col3.metric("Districts Covered", result["District"].nunique())
 
         st.divider()
 
         # Results table
         st.markdown("#### 📋 Recommended Destinations")
-        display_df = result[[
-            "Destination", "District",
-            "review_count", "popularity_score", "district_rank"
-        ]].copy()
-        display_df.columns = [
-            "Destination", "District",
-            "Total Reviews", "Popularity Score", "District Rank"
-        ]
+
+        if "final_score" in result.columns:
+            display_df = result[[
+                "Destination", "District",
+                "review_count", "keyword_freq",
+                "relevance_score", "final_score"
+            ]].copy()
+            display_df.columns = [
+                "Destination", "District",
+                "Total Reviews", "Keyword Mentions",
+                "Relevance Score", "Final Score"
+            ]
+        else:
+            display_df = result[[
+                "Destination", "District",
+                "review_count", "popularity_score", "district_rank"
+            ]].copy()
+            display_df.columns = [
+                "Destination", "District",
+                "Total Reviews", "Popularity Score", "District Rank"
+            ]
+
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
         st.divider()
 
-        # Visualisation
+        # Visualisations
         col1, col2 = st.columns(2)
 
         with col1:
+            # Pick best available score column
+            score_col = "final_score" if "final_score" in result.columns \
+                else "relevance_score" if "relevance_score" in result.columns \
+                else "popularity_score"
+
             fig = px.bar(
                 result,
-                x="popularity_score",
+                x=score_col,
                 y="Destination",
                 orientation="h",
                 color="District",
-                title="Recommended Destinations by Popularity Score",
-                labels={"popularity_score": "Popularity Score"},
+                title="Recommended Destinations by Score",
+                labels={score_col: "Score"},
                 color_discrete_sequence=px.colors.qualitative.Set2
             )
             fig.update_layout(yaxis=dict(autorange="reversed"))
@@ -230,7 +241,7 @@ if st.button("🔍 Find Destinations", type="primary", use_container_width=True)
             fig = px.pie(
                 result,
                 names="District",
-                values="popularity_score",
+                values=score_col,
                 title="Recommendations by District",
                 color_discrete_sequence=px.colors.qualitative.Pastel
             )
@@ -243,7 +254,10 @@ if st.button("🔍 Find Destinations", type="primary", use_container_width=True)
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("📍 Destination", top["Destination"])
         col2.metric("🗺️ District", top["District"])
-        col3.metric("⭐ Popularity Score", f"{top['popularity_score']:.1f}")
+        col3.metric(
+            "⭐ Score",
+            f"{top.get('final_score', top.get('relevance_score', top.get('popularity_score', 0))):.1f}"
+        )
         col4.metric("📝 Total Reviews", f"{int(top['review_count']):,}")
 
 else:
@@ -267,7 +281,6 @@ else:
     fig.update_layout(yaxis=dict(autorange="reversed"))
     st.plotly_chart(fig, use_container_width=True)
 
-    # District overview
     col1, col2 = st.columns(2)
     with col1:
         fig = px.pie(
@@ -295,6 +308,6 @@ else:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: grey; font-size: 13px;'>
-    Destination recommendations powered by Apache Spark TF-IDF · Popularity Scoring · Window Functions
+    Destination recommendations powered by Apache Spark · Keyword Density Scoring · Popularity Ranking
 </div>
 """, unsafe_allow_html=True)

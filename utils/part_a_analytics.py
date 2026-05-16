@@ -349,3 +349,97 @@ def get_dataset_overview(spark: SparkSession):
         "total_districts": df.select("District").distinct().count(),
         "total_timespans": df.select("Timespan").distinct().count()
     }
+
+def get_keyword_scored_destinations(spark: SparkSession, keywords: list, top_n: int = 10):
+    """
+    Ranks destinations by keyword relevance using
+    keyword density — not just raw frequency.
+
+    Keyword Density = keyword mentions / total reviews
+    This prevents high-review destinations from
+    dominating results just because of volume.
+
+    Final score = 80% keyword density + 20% popularity
+    Minimum threshold: keyword must appear in at least
+    5% of the destination's reviews to qualify.
+    """
+    df = load_reviews(spark)
+
+    # Combine all reviews per destination
+    dest_profiles = df.groupBy("Destination", "District") \
+        .agg(
+            F.concat_ws(" ", F.collect_list(F.lower(F.col("Review")))).alias("all_reviews"),
+            F.count("*").alias("review_count")
+        )
+
+    # Calculate raw keyword frequency for each keyword
+    score_expr = sum(
+        (F.length(F.col("all_reviews")) -
+         F.length(F.regexp_replace(F.col("all_reviews"), kw.lower(), ""))) /
+        F.greatest(F.lit(len(kw)), F.lit(1))
+        for kw in keywords
+    )
+
+    scored = dest_profiles.withColumn("keyword_freq", score_expr)
+
+    # Calculate keyword DENSITY = freq / review_count
+    # This normalises by destination size
+    scored = scored.withColumn(
+        "keyword_density",
+        F.col("keyword_freq") / F.col("review_count")
+    )
+
+    # Minimum density threshold — keyword must appear
+    # in at least 5% of reviews to qualify
+    # This filters out accidental single mentions
+    min_threshold = 0.05 * len(keywords)
+    scored = scored.filter(F.col("keyword_density") >= min_threshold)
+
+    # Join with popularity scores
+    popularity = engineer_popularity_score(spark)
+    popularity_spark = spark.createDataFrame(popularity)
+
+    result = scored.join(
+        popularity_spark.select("Destination", "popularity_score"),
+        on="Destination",
+        how="left"
+    )
+
+    # Normalise density to 0-100
+    max_density = scored.agg(
+        F.max("keyword_density")
+    ).collect()[0][0]
+
+    # Handle case where no keywords match — return empty
+    if max_density is None or scored.count() == 0:
+        return pd.DataFrame(columns=[
+            "Destination", "District",
+            "review_count", "keyword_freq",
+            "relevance_score", "final_score"
+        ])
+
+    result = result.withColumn(
+        "relevance_score",
+        F.round(
+            F.col("keyword_density") /
+            F.lit(max(float(max_density), 0.001)) * 100, 2
+        )
+    )
+
+    # Final score — 80% keyword relevance + 20% popularity
+    result = result.withColumn(
+        "final_score",
+        F.round(
+            (F.col("relevance_score") * 0.8) +
+            (F.coalesce(F.col("popularity_score"), F.lit(0)) * 0.2),
+            2
+        )
+    )
+
+    return result.orderBy(F.desc("final_score")) \
+        .limit(top_n) \
+        .select(
+            "Destination", "District",
+            "review_count", "keyword_freq",
+            "relevance_score", "final_score"
+        ).toPandas()

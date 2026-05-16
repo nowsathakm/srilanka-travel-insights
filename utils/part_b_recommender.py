@@ -338,6 +338,7 @@ def get_hybrid_recommendations(
             "roomType",
             "numberOfGuests",
             "stars",
+            "guest_match_score",
             "hybrid_score"
         )
 

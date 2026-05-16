@@ -408,6 +408,6 @@ else:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: grey; font-size: 13px;'>
-    Part B Complete — Hybrid Recommendation System powered by Apache Spark · Content-Based Filtering · Popularity Ranking · Precision@K Evaluation
+    Hybrid Recommendation System powered by Apache Spark · Content-Based Filtering · Popularity Ranking · Precision@K Evaluation
 </div>
 """, unsafe_allow_html=True)
